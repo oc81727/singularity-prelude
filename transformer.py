@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from datasets import load_dataset
 
 import bigT
 
 t = bigT.Tokenizer()
-t.load()
+t.load("data/tiktoks/newtokens32768")
 
 # tokens = ['\n', ' ', '!', '$', '&', "'", ',', '-', '.', '3', ':', ';', '?', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
 # tokenDecode = {n:i for n, i in enumerate(tokens)}
@@ -28,6 +29,26 @@ with open("cleaned_text.txt", encoding="utf-8") as f:
 	trainData = encode(f.read())
 	dataLength = len(trainData)
 	splitPos = round(dataLength * 0.9)
+
+
+
+trainDataset = iter(load_dataset(
+	"data/paraqeet/iliketrains",
+	data_files="*.parquet",
+	split="train",
+	streaming=True,
+))
+trainDoc = next(trainDataset)
+
+
+valDataset = iter(load_dataset(
+	"data/paraqeet/valorant",
+	data_files="*.parquet",
+	split="train",
+	streaming=True,
+))
+valDoc = next(valDataset)
+
 
 def getBatch(split = "train"):
 	if split == "train":
