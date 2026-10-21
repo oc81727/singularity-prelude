@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from datasets import load_dataset
+import time
 
 import bigT
 
@@ -25,10 +26,10 @@ def decode(tokens):
 	# return "".join([tokenDecode[t.item()] for t in tokens])
 
 
-with open("cleaned_text.txt", encoding="utf-8") as f:
-	trainData = encode(f.read())
-	dataLength = len(trainData)
-	splitPos = round(dataLength * 0.9)
+# with open("cleaned_text.txt", encoding="utf-8") as f:
+# 	trainData = encode(f.read())
+# 	dataLength = len(trainData)
+# 	splitPos = round(dataLength * 0.9)
 
 
 
@@ -38,7 +39,11 @@ trainDataset = iter(load_dataset(
 	split="train",
 	streaming=True,
 ))
-trainDoc = next(trainDataset)
+
+trainData = t.encode(next(trainDataset).get("text"))
+trainData.append(3)
+# ascii end of text is decimal 3
+# forgot to include end of document token in tokenizer...
 
 
 valDataset = iter(load_dataset(
@@ -47,21 +52,48 @@ valDataset = iter(load_dataset(
 	split="train",
 	streaming=True,
 ))
-valDoc = next(valDataset)
+
+valData = t.encode(next(valDataset).get("text"))
+valData.append(3)
 
 
 def getBatch(split = "train"):
+	global trainData, valData
+	batch = []
+	print(trainData)
 	if split == "train":
-		pos = torch.randint(splitPos, dataLength - blockSize, (batchSize, ))
+		for i in range(batchSize):
+			currentEntry = []
+			while len(currentEntry) < blockSize + 1:
+				ex = blockSize + 1 - len(currentEntry)
+				currentEntry.extend(trainData[:ex])
+				trainData = trainData[ex:]
+				if len(trainData) == 0:
+					# s = time.time()
+					trainData = t.encode(next(trainDataset).get("text"))
+					trainData.append(3)
+					# e = time.time()
+					# print(f"tokenizing took {e - s} seconds")
+			batch.append(currentEntry)
 	else:
-		pos = torch.randint(0, splitPos - blockSize, (batchSize, ))
-	# print(encode(trainData[pos[0]:pos[0]+blockSize]))
-	# print(encode(trainData[pos[1]:pos[1]+blockSize]))
-	# print()
-	x = torch.stack([trainData[p:p+blockSize] for p in pos])
-	y = torch.stack([trainData[p+1:p+blockSize+1] for p in pos])
-	return x, y
+		for i in range(batchSize):
+			currentEntry = []
+			while len(currentEntry) < blockSize + 1:
+				ex = blockSize + 1 - len(currentEntry)
+				currentEntry.extend(valData[:ex])
+				valData = valData[ex:]
+				if len(trainData) == 0:
+					# s = time.time()
+					valData = t.encode(next(valDataset).get("text"))
+					valData.append(3)
+					# e = time.time()
+					# print(f"tokenizing took {e - s} seconds")
+			batch.append(currentEntry)
 
+	x = torch.stack([torch.tensor(entry[:-1]) for entry in batch])
+	y = torch.stack([torch.tensor(entry[1:]) for entry in batch])
+
+	return x, y
 
 
 # hyperparameters
@@ -69,7 +101,7 @@ def getBatch(split = "train"):
 torch.manual_seed(67)
 # vocabSize = len(tokens)
 vocabSize = 1024 + 256
-blockSize = 32 # context size
+blockSize = 256 # context size
 embedSize = 256 # embedding dimension
 batchSize = 32
 blockNum = 8
@@ -85,6 +117,28 @@ saveInterval = 1000
 trainIters = 0
 learningRate = 1e-4
 
+
+x, y = getBatch(split="train")
+
+
+
+	# print(row.tolist())
+print(len(x))
+print(len(x[0]))
+print(t.fromBytes(t.decode(x[0].tolist())))
+print()
+print(t.fromBytes(t.decode(y[0].tolist())))
+print()
+print(t.fromBytes(t.decode(x[1].tolist())))
+print()
+print(t.fromBytes(t.decode(y[1].tolist())))
+print()
+print(t.fromBytes(t.decode(x[2].tolist())))
+print()
+print(t.fromBytes(t.decode(y[2].tolist())))
+print()
+
+input()
 
 class Head(nn.Module):
 	def __init__(self):
