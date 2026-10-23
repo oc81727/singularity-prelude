@@ -14,7 +14,7 @@ class Tokenizer():
 		self.merges = {}
 		self.mergesInv = {}
 		self.safeDistance = 1000000
-		self.special = ["<|nameStart|>", "<|nameEnd|>", "<|msgStart|>", "<|msgEnd|>"]
+		self.special = ["<|nameStart|>", "<|nameEnd|>", "<|msgStart|>", "<|msgEnd|>", "<|endOfDocument|>"]
 		self.customSplit = "|".join([i.replace("|", "\\|") for i in self.special])
 		self.customReplace = {self.special[n]: 256+n for n in range(len(self.special))} # token to id
 		self.customReplaceInv = {v:k for k,v in self.customReplace.items()} # id to token
@@ -22,6 +22,7 @@ class Tokenizer():
 		self.bannedStart = list(range(256, 256 + len(self.special))) + [ord(i) for i in ["\n"]]
 		self.bannedEnd = list(range(256, 256 + len(self.special))) + [ord(i) for i in [" ", "\n"]]
 		self.heap = []
+		self.defaultTokenSize = self.vocabSize
 		# self.pairs = {}
 		self.versions = {}
 
@@ -143,7 +144,7 @@ class Tokenizer():
 		print("constructing linked list")
 		textBytes = LinkedList()
 		textBytes.setList(self.toBytes(self.corpus))
-		print(textBytes)
+		# print(textBytes)
 		print("getting pairs")
 		pairs = self.getPairs(textBytes)
 		print("building heap")
@@ -158,9 +159,9 @@ class Tokenizer():
 		# print(f"versions: {self.versions}")
 		# print("beginning main loop")
 		print("starting")
-		for i in range(num):
+		for i in range(num - self.defaultTokenSize):
 			# print(textBytes)
-			if checkpoints is not None and i in checkpoints:
+			if checkpoints is not None and i + self.defaultTokenSize in checkpoints:
 				self.save(f"checkpoint{i}")
 				print(f"\nsaved checkpoint {i}\n")
 
@@ -198,7 +199,7 @@ class Tokenizer():
 			newToken = self.vocabSize
 			self.vocabSize += 1
 			self.merges[commonPair] = newToken
-			print(f"{newToken} {commonPair}")
+			# print(f"{newToken} {commonPair}")
 			# processing pair occurences
 			toProcess = pairs[commonPair]
 			# curr.value is the actual pair
@@ -250,7 +251,7 @@ class Tokenizer():
 
 		self.mergesInv = {v:self.decodePair(k) for k,v in self.merges.items()}
 		print("\ndone!")
-		print(textBytes)
+		# print(textBytes)
 		# return textBytes.toList()
 
 
@@ -463,13 +464,19 @@ class Tokenizer():
 
 
 
-t = Tokenizer()
+# t = Tokenizer()
 
 
 # with open("data/combined_sample.txt", encoding="utf-8") as f:
 # 	t.corpus = f.read()
-# t.build(32768-256, checkpoints = [8192-256, 16384-256])
+# t.build(32768, checkpoints = [8192, 16384])
 # t.save("newtokens32768")
+# starting at 14:39 (on laptop!)
+# maxing out my poor laptops ram
+# going crazy on virtual memory rn
+# never mind ill just run it on my pc later
+
+
 # started at 4:28
 # finished at 5:09
 
@@ -490,17 +497,18 @@ t = Tokenizer()
 # t.corpus = "hello<|nameStart|>john<|nameEnd|><|msgStart|>world frfr testing aha im gonna kms woah who said that why did u say that the lion and the witch and the wardrobe foo bar antimony arsenic aluminum selenium hydrogen oxygen nitrogen rhenium nickel neodymium neptunium germanium iron americium ruthenium uranium europium zirconium lutetium vanadium lanthanum<|msgEnd|>"
 
 
-with open("swift.txt", encoding="utf-8") as f:
-	t.corpus = f.read()
+# with open("swift.txt", encoding="utf-8") as f:
+	# t.corpus = f.read()
 
 # t.load("tokens32768")
 
 
 # t.encode(t.corpus[:100])
 
-t.build(10000)
-t.save("debug")
+# t.build(10000)
+# print(t.fromBytes(t.decode(t.encode(t.corpus[:1000]))))
+# t.save("debug")
 # print(t.visualize())
 # print(t.corpus)
 # # print(t.fromBytes(t.decode(t.encode(t.corpus))))
-print(t.visualize(t.encode(t.corpus)))
+# print(t.visualize(t.encode(t.corpus)))
