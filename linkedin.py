@@ -40,6 +40,7 @@ class LinkedList():
 			self.end = node
 		else:
 			self.end.next = node
+			node.prev = self.end # forgot this line! good thing this function is useless
 			self.end = node
 		self.length += 1
 
