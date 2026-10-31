@@ -4,10 +4,14 @@ import torch.nn.functional as F
 from datasets import load_dataset
 import time
 
-import bigT
+import bigT2
 
-t = bigT.Tokenizer()
-t.load("data/tiktoks/newtokens32768")
+t = bigT2.Tokenizer()
+# t.load("data/tiktoks/newtokens32768")
+t.load("data/tiktoks/checkpoint7931") # 8192 tokens
+# t.load("tok2048")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"using device: {device}")
 
 # tokens = ['\n', ' ', '!', '$', '&', "'", ',', '-', '.', '3', ':', ';', '?', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
 # tokenDecode = {n:i for n, i in enumerate(tokens)}
@@ -33,34 +37,47 @@ def decode(tokens):
 
 
 
-trainDataset = iter(load_dataset(
+
+trainDataset = load_dataset(
 	"data/paraqeet/iliketrains",
 	data_files="*.parquet",
 	split="train",
 	streaming=True,
-))
+)
+trainPointer = 0
+def iterateDataset(dataset, skip = 0):
+	dataset.skip(skip)
+	while True:
+		print("start of dataset!")
+		for item in dataset:
+			yield item
 
-trainData = t.encode(next(trainDataset).get("text"))
-trainData.append(3)
-# ascii end of text is decimal 3
-# forgot to include end of document token in tokenizer...
+trainIter = iterateDataset(trainDataset, trainPointer)
+trainData = t.encode(next(trainIter).get("text"))
+trainData.append(260)
+# end of document token
 
 
-valDataset = iter(load_dataset(
+valDataset = load_dataset(
 	"data/paraqeet/valorant",
 	data_files="*.parquet",
 	split="train",
 	streaming=True,
-))
+)
+valPointer = 0
+valIter = iterateDataset(valDataset, valPointer)
 
-valData = t.encode(next(valDataset).get("text"))
-valData.append(3)
+valData = t.encode(next(valIter).get("text"))
+valData.append(260)
+
+
+
 
 
 def getBatch(split = "train"):
-	global trainData, valData
+	global trainData, valData, trainPointer, valPointer
 	batch = []
-	print(trainData)
+	# print(trainData)
 	if split == "train":
 		for i in range(batchSize):
 			currentEntry = []
@@ -70,8 +87,9 @@ def getBatch(split = "train"):
 				trainData = trainData[ex:]
 				if len(trainData) == 0:
 					# s = time.time()
-					trainData = t.encode(next(trainDataset).get("text"))
-					trainData.append(3)
+					trainPointer += 1
+					trainData = t.encode(next(trainIter).get("text"))
+					trainData.append(260)
 					# e = time.time()
 					# print(f"tokenizing took {e - s} seconds")
 			batch.append(currentEntry)
@@ -82,17 +100,19 @@ def getBatch(split = "train"):
 				ex = blockSize + 1 - len(currentEntry)
 				currentEntry.extend(valData[:ex])
 				valData = valData[ex:]
-				if len(trainData) == 0:
+				if len(valData) == 0:
 					# s = time.time()
-					valData = t.encode(next(valDataset).get("text"))
-					valData.append(3)
+					valPointer += 1
+					valData = t.encode(next(valIter).get("text"))
+					valData.append(260)
 					# e = time.time()
 					# print(f"tokenizing took {e - s} seconds")
 			batch.append(currentEntry)
 
-	x = torch.stack([torch.tensor(entry[:-1]) for entry in batch])
-	y = torch.stack([torch.tensor(entry[1:]) for entry in batch])
-
+	# x = torch.stack([torch.tensor(entry[:-1]) for entry in batch])
+	x = torch.tensor([entry[:-1] for entry in batch], device = device)
+	# y = torch.stack([torch.tensor(entry[1:]) for entry in batch])
+	y = torch.tensor([entry[1:] for entry in batch], device = device)
 	return x, y
 
 
@@ -100,22 +120,27 @@ def getBatch(split = "train"):
 
 torch.manual_seed(67)
 # vocabSize = len(tokens)
-vocabSize = 1024 + 256
-blockSize = 256 # context size
+vocabSize = 8192
+blockSize = 512 # context size
 embedSize = 256 # embedding dimension
-batchSize = 32
-blockNum = 8
+batchSize = 64
+blockNum = 6
 feedForwardSize = 4 
 
-headNum = 8
+headNum = 4
 headSize = embedSize//headNum # must be divisible
-dropout = 0.2
+dropout = 0.1
 
 evalIters = 50
 evalInterval = 1000
 saveInterval = 1000
-trainIters = 0
+printInterval = 100
+trainIters = 1000000
+
 learningRate = 1e-4
+betas = (0.9, 0.95)
+epsilon = 1e-8
+weight_decay = 0.1
 
 
 x, y = getBatch(split="train")
@@ -123,22 +148,22 @@ x, y = getBatch(split="train")
 
 
 	# print(row.tolist())
-print(len(x))
-print(len(x[0]))
-print(t.fromBytes(t.decode(x[0].tolist())))
-print()
-print(t.fromBytes(t.decode(y[0].tolist())))
-print()
-print(t.fromBytes(t.decode(x[1].tolist())))
-print()
-print(t.fromBytes(t.decode(y[1].tolist())))
-print()
-print(t.fromBytes(t.decode(x[2].tolist())))
-print()
-print(t.fromBytes(t.decode(y[2].tolist())))
-print()
-
-input()
+# print(len(x))
+# print(len(x[0]))
+# print(t.fromBytes(t.decode(x[0].tolist())))
+# print()
+# print(t.fromBytes(t.decode(y[0].tolist())))
+# print()
+# print(t.fromBytes(t.decode(x[1].tolist())))
+# print()
+# print(t.fromBytes(t.decode(y[1].tolist())))
+# print()
+# print(t.fromBytes(t.decode(x[2].tolist())))
+# print()
+# print(t.fromBytes(t.decode(y[2].tolist())))
+# print()
+#
+# input()
 
 class Head(nn.Module):
 	def __init__(self):
@@ -211,7 +236,7 @@ class Model(nn.Module):
 
 	def forward(self, x, y = None): # assume maxed out block size
 
-		xp = self.posEmbed(torch.arange(0, min(len(x[0]), blockSize)))
+		xp = self.posEmbed(torch.arange(0, min(len(x[0]), blockSize), device = device))
 		tp = self.tokEmbed(x)
 		x = xp + tp
 
@@ -234,6 +259,7 @@ class Model(nn.Module):
 		for split in ["train", "val"]:
 			losses = torch.zeros(evalIters)
 			for i in range(evalIters):
+				# print(i)
 				x, y = getBatch(split)
 				logits, loss = self(x, y)
 				losses[i] = loss.item()
@@ -268,7 +294,7 @@ def save(model, optimizer, step):
 	}, "model.pth")
 
 def load():
-	return torch.load("model.pth", weights_only = False)
+	return torch.load("model.pth", weights_only = False, map_location=device)
 
 
 
@@ -277,8 +303,8 @@ def load():
 
 
 
-model = Model()
-optimizer = torch.optim.AdamW(model.parameters(), lr = learningRate)
+model = Model().to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr = learningRate, betas=betas, weight_decay=weight_decay,eps=epsilon,)
 step = 0
 # print(decode(model.generate(encode("\n"), 100)))
 try:
@@ -290,24 +316,30 @@ except:
 	print("failed to load frfr")
 
 while step < trainIters:
+	# print("\rbatch", end="")
 	x, y = getBatch()
-	logits, loss = model(x, y)
 	optimizer.zero_grad(set_to_none=True)
-	loss.backward()
+	with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+		# print("\rforward", end="")
+		logits, loss = model(x, y)
+		# print("\rbackward", end="")
+		loss.backward()
 	optimizer.step()
 
-	if step % evalInterval == 0:
+	if step % evalInterval == 0 and step != 0:
 		print(step, model.estimateLoss())
-	if step % saveInterval == 0:
+	if step % saveInterval == 0 and step != 0:
 		save(model, optimizer, step)
-		print("saved at step", step)
+		print(f"saved at step {step}, pointers: {trainPointer}, {valPointer}, {time.ctime()}")
+	if step % printInterval == 0:
+		print(f"step {step}")
 	step += 1
 
 print("done!")
 save(model, optimizer, step)
 print(model.estimateLoss())
-
-print(decode(model.generate(encode("To be or not to be, "), 1000)))
+g = model.generate(encode("Why did the chicken cross the road?").to(device), 1000).cpu().tolist()
+print(t.fromBytes(t.decode(g)))
 
 
 
