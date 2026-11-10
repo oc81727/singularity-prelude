@@ -1,5 +1,8 @@
 .idea/
 data/paraqeet
+data/fine
+ccp/.vscode
+
 *.pth
 
 # Byte-compiled / optimized / DLL files
