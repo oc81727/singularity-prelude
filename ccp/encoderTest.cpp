@@ -7,10 +7,12 @@
 #include <deque>
 #include <map>
 #include <cstdint>
-#include <numeric>
-#include <algorithm>
+#include <stdexcept>
 #include "include/nlohmann/json.hpp"
 #include <fstream>
+#include <numeric>
+
+#include <ctime>
 using namespace std;
 using json = nlohmann::json;
 
@@ -25,19 +27,19 @@ class Tokenizer {
     unordered_map<uint32_t, uint16_t> merges;
     // encoded pair: value
     
-    unordered_map<int, int> versions;
-    unordered_map<int, int> pairLengths;
+    unordered_map<uint32_t, int> versions;
+    unordered_map<uint32_t, int> pairLengths;
     vector<uint16_t> byteArray;
     vector<int> nextIndex;
     vector<int> prevIndex;
     vector<int> pairIndex;
 
-    priority_queue<pair<uint16_t, pair<int, int>>, vector<pair<uint16_t, pair<int, int>>>, greater<pair<uint16_t, pair<int, int>>>> heap;
+    priority_queue<pair<uint16_t, pair<int, uint32_t>>, vector<pair<uint16_t, pair<int, uint32_t>>>, greater<pair<uint16_t, pair<int, uint32_t>>>> heap;
     // min heap
 
 
     uint32_t encodePair(uint16_t v1, uint16_t v2) {
-        return v1 << 16 | v2;
+        return (static_cast<uint32_t>(v1) << 16) | v2;
     }
 
     void decodePair(int e, int& v1, int& v2) {
@@ -60,7 +62,7 @@ class Tokenizer {
 
         for (const auto& [key, value] : j.at("merges").items())
         {
-            uint32_t k = stoi(key);
+            uint32_t k = stoul(key);
             uint16_t v = value.get<uint16_t>();
 
             merges[k] = v;
@@ -84,13 +86,37 @@ class Tokenizer {
         for (auto& pair : occPos) {
             size_t pos = pair.first;
             uint16_t val = pair.second;
-            bytes.insert(bytes.end(), str.begin() + currentPos, str.begin() + pos);
+            // bytes.insert(bytes.end(), str.begin() + currentPos, str.begin() + pos);
+            for (size_t i = currentPos; i < pos; i++) {
+                bytes.push_back(static_cast<unsigned char>(str[i]));
+            }
             bytes.push_back(val);
             currentPos += (pos - currentPos) + specialLength.at(val);
         }
-        bytes.insert(bytes.end(), str.begin() + currentPos, str.end());
+        for (size_t i = currentPos; i < str.size(); i++) {
+            bytes.push_back(static_cast<unsigned char>(str[i]));
+        }
+        // bytes.insert(bytes.end(), str.begin() + currentPos, str.end());
         
         return bytes;
+    }
+
+
+    void saveBin(const vector<uint16_t>& data, const string& filename) {
+        ofstream file(filename, ios::binary);
+
+        if (!file) {
+            throw runtime_error("Could not open file");
+        }
+
+        file.write(
+            reinterpret_cast<const char*>(data.data()),
+            data.size() * sizeof(uint16_t)
+        );
+
+        if (!file) {
+            throw runtime_error("Write failed");
+        }
     }
 
 
@@ -120,8 +146,8 @@ class Tokenizer {
     }
 
 
-    void addPair(unordered_map<int, vector<int>>& pairs, uint16_t v1, uint16_t v2, int n, vector<int>& pairIndex) {
-        int enc = encodePair(v1, v2);
+    void addPair(unordered_map<uint32_t, vector<int>>& pairs, uint16_t v1, uint16_t v2, int n, vector<int>& pairIndex) {
+        uint32_t enc = encodePair(v1, v2);
         if (pairs.find(enc) == pairs.end()) { // not in pairs
             pairs[enc] = vector<int>();
             versions[enc] = 0;
@@ -135,41 +161,53 @@ class Tokenizer {
 
     }
 
-    unordered_map<int, vector<int>> getPairs() {
-        unordered_map<int, vector<int>> pairs;
-        for (int i = 0; i < byteArray.size() - 1; i++) {
+    unordered_map<uint32_t, vector<int>> getPairs() {
+        unordered_map<uint32_t, vector<int>> pairs;
+        for (size_t i = 0; i < byteArray.size() - 1; i++) {
             addPair(pairs, byteArray[i], byteArray[i+1], i, pairIndex);
         }
         return pairs;
     }
 
-    void addHeap(int pairEnc) {
+    void addHeap(uint32_t pairEnc, priority_queue<pair<uint16_t, pair<int, uint32_t>>, vector<pair<uint16_t, pair<int, uint32_t>>>, greater<pair<uint16_t, pair<int, uint32_t>>>>& toHeap) {
         if (merges.find(pairEnc) == merges.end()) {
             return;
         }
         uint16_t m = merges[pairEnc];
         int v = versions[pairEnc];
         pair<uint16_t, pair<int, int>> heapVal = make_pair(m, make_pair(v, pairEnc));
-        heap.push(heapVal);
+        toHeap.push(heapVal);
+    }
+
+    void reheap(unordered_map<uint32_t, vector<int>>& pairs) {
+        priority_queue<pair<uint16_t, pair<int, uint32_t>>, vector<pair<uint16_t, pair<int, uint32_t>>>, greater<pair<uint16_t, pair<int, uint32_t>>>> newHeap;
+
+        for (auto& [k, v] : pairs) {
+            if (pairLengths[k] > 0) {
+                addHeap(k, newHeap);
+            }
+        }
+        heap = move(newHeap);
     }
 
 
     vector<uint16_t> encode(string& text) {
         uint16_t token;
         int ver;
-        int currentEnc;
+        uint32_t currentEnc;
         int pre;
         int post;
         int postPost;
 
-        heap = priority_queue<pair<uint16_t, pair<int, int>>, vector<pair<uint16_t, pair<int, int>>>, greater<pair<uint16_t, pair<int, int>>>>();
+        heap = priority_queue<pair<uint16_t, pair<int, uint32_t>>, vector<pair<uint16_t, pair<int, uint32_t>>>, greater<pair<uint16_t, pair<int, uint32_t>>>>();
 
-        versions = unordered_map<int, int>();
+        versions = unordered_map<uint32_t, int>();
         // unordered_map<uint16_t, int> versions;
-        pairLengths = unordered_map<int, int>();
+        pairLengths = unordered_map<uint32_t, int>();
         // unordered_map<int, int> pairLengths;
         byteArray = toBytes(text);
-        int byteLength = byteArray.size();
+        size_t byteLength = byteArray.size();
+        cout << "num bytes: " << byteLength << endl;
 
         nextIndex = vector<int>(byteLength);
         iota(nextIndex.begin(), nextIndex.end(), 1);
@@ -181,20 +219,24 @@ class Tokenizer {
         pairIndex = vector<int>(byteLength);
 
 
-        unordered_map<int, vector<int>> pairs = getPairs();
+        unordered_map<uint32_t, vector<int>> pairs = getPairs();
 
         for (auto& [k, v] : pairs) {
-            addHeap(k);
+            addHeap(k, heap);
         }
+        // cout << "finished init" << endl;
 
         while (true) {
+            // if (heap.size() > 40000 * pairs.size()) {
+            //     reheap(pairs);
+            // }
             bool b = false;
             while (true) {
                 if (heap.size() == 0) {
                     b = true;
                     break;
                 }
-                pair<uint16_t, pair<int, int>> heapTop = heap.top();
+                pair<uint16_t, pair<int, uint32_t>> heapTop = heap.top();
                 heap.pop();
                 token = heapTop.first;
                 ver = heapTop.second.first;
@@ -204,7 +246,11 @@ class Tokenizer {
                 }
                 break;
             }
-            if (b) {break;}
+            if (b) {
+                // cout << "finished" << endl;
+                break;
+            }
+            // cout << "current enc: " << currentEnc << endl; 
 
             vector<int>& toProcess = pairs[currentEnc];
             for (int curr : toProcess) {
@@ -218,20 +264,22 @@ class Tokenizer {
                 }
 
                 if (pre != -1) {
-                    int enc = encodePair(byteArray[pre], byteArray[curr]);
+                    uint32_t enc = encodePair(byteArray[pre], byteArray[curr]);
                     pairs[enc][pairIndex[pre]] = -1;
                     if (enc != currentEnc) {
                         versions[enc] += 1;
-                        addHeap(enc);
+                        addHeap(enc, heap);
                     }
+                    pairLengths[enc] -= 1;
                 }
                 if (postPost != -1) {
-                    int enc = encodePair(byteArray[post], byteArray[postPost]);
+                    uint32_t enc = encodePair(byteArray[post], byteArray[postPost]);
                     pairs[enc][pairIndex[post]] = -1;
                     if (enc != currentEnc) {
                         versions[enc] += 1;
-                        addHeap(enc);
+                        addHeap(enc, heap);
                     }
+                    pairLengths[enc] -= 1;
                 }
 
                 byteArray[post] = -1;
@@ -248,15 +296,15 @@ class Tokenizer {
                 byteArray[curr] = token;
 
                 if (pre != -1) {
-                    int enc = encodePair(byteArray[pre], byteArray[curr]);
+                    uint32_t enc = encodePair(byteArray[pre], byteArray[curr]);
                     addPair(pairs, byteArray[pre], byteArray[curr], pre, pairIndex);
-                    addHeap(enc);
+                    addHeap(enc, heap);
                 }
                 post = nextIndex[curr];
                 if (post != -1) {
-                    int enc = encodePair(byteArray[curr], byteArray[post]);
+                    uint32_t enc = encodePair(byteArray[curr], byteArray[post]);
                     addPair(pairs, byteArray[curr], byteArray[post], curr, pairIndex);
-                    addHeap(enc);
+                    addHeap(enc, heap);
                 }
 
 
@@ -284,11 +332,29 @@ class Tokenizer {
 int main() {
     
     Tokenizer t = Tokenizer();
-    t.load("../data/tiktoks/converted32768.json");
-    string text = t.loadString("../data/combined_clean2.txt");
-    vector<uint16_t> encoded = t.encode(text);
-    t.printVec(encoded);
-    // encode(corpus, specialToToken, specialLength);
+    t.load("../data/tiktoks/converted8192.json");
+    string text = t.loadString("../data/fine/txt/frog_clean.txt");
+    t.saveBin(t.encode(text), "../data/fine/bin/1.bin");
+
+    text = t.loadString("../data/fine/txt/mad_clean.txt");
+    t.saveBin(t.encode(text), "../data/fine/bin/2.bin");
+
+    text = t.loadString("../data/fine/txt/war_clean.txt");
+    t.saveBin(t.encode(text), "../data/fine/bin/3.bin");
+    // t.printMap(t.merges);
+    // cout << t.corpus << endl;
+    // vector<uint16_t> encoded = t.encode(t.corpus);
+    // t.printVec(encoded);
+    // for (int i = 1; i <= 100; i++) {
+    //     string text = t.loadString("../data/paraqeet/iliketrains/txt/" + to_string(i) + ".txt");
+    //     std::time_t now = std::time(nullptr);
+    //     std::cout << std::ctime(&now);
+    //     cout << "starting " << i << endl;
+    //     vector<uint16_t> encoded = t.encode(text);
+    //     cout << "saving" << endl;
+    //     t.saveBin(encoded, "../data/paraqeet/iliketrains/bin/" + to_string(i) + ".bin");
+    //     cout << "done!" << endl;
+    // }
 
     return 0;
 }

@@ -4,6 +4,9 @@ import torch.nn.functional as F
 from datasets import load_dataset
 import time
 
+import numpy as np
+from sympy import false
+
 import bigT2
 
 t = bigT2.Tokenizer()
@@ -70,30 +73,37 @@ valIter = iterateDataset(valDataset, valPointer)
 valData = t.encode(next(valIter).get("text"))
 valData.append(260)
 
+currentTrainFile = 31 # 1-100 inclusive
+currentTrainData = torch.from_numpy(np.fromfile(f"data/paraqeet/iliketrains/bin/{currentTrainFile}.bin", dtype=np.uint16)).long()
 
-
+# currentTrainFile = 1 # 1-3 inclusive
+# currentTrainData = torch.from_numpy(np.fromfile(f"data/fine/bin/{currentTrainFile}.bin", dtype=np.uint16)).long()
 
 
 def getBatch(split = "train"):
-	global trainData, valData, trainPointer, valPointer
+	global trainData, valData, trainPointer, valPointer, currentTrainFile, currentTrainData, currentEpoch
 	batch = []
+	s = time.time()
 	# print(trainData)
 	if split == "train":
 		for i in range(batchSize):
 			currentEntry = []
 			while len(currentEntry) < blockSize + 1:
 				ex = blockSize + 1 - len(currentEntry)
-				currentEntry.extend(trainData[:ex])
-				trainData = trainData[ex:]
-				if len(trainData) == 0:
-					# s = time.time()
-					trainPointer += 1
-					trainData = t.encode(next(trainIter).get("text"))
-					trainData.append(260)
-					# e = time.time()
-					# print(f"tokenizing took {e - s} seconds")
+				currentEntry.extend(currentTrainData[:ex])
+				currentTrainData = currentTrainData[ex:]
+				if len(currentTrainData) == 0:
+					currentTrainFile += 1
+					print(currentTrainFile)
+					if currentTrainFile > 3: # > 100:
+						currentTrainFile = 1
+						currentEpoch += 1
+						print(f"epoch: {currentEpoch}")
+					currentTrainData = torch.from_numpy(np.fromfile(f"data/paraqeet/iliketrains/bin/{currentTrainFile}.bin", dtype=np.uint16)).long()
+					# currentTrainData = torch.from_numpy(np.fromfile(f"data/fine/bin/{currentTrainFile}.bin", dtype=np.uint16)).long()
 			batch.append(currentEntry)
 	else:
+		# havent precompiled val dataset yet
 		for i in range(batchSize):
 			currentEntry = []
 			while len(currentEntry) < blockSize + 1:
@@ -101,18 +111,16 @@ def getBatch(split = "train"):
 				currentEntry.extend(valData[:ex])
 				valData = valData[ex:]
 				if len(valData) == 0:
-					# s = time.time()
 					valPointer += 1
 					valData = t.encode(next(valIter).get("text"))
 					valData.append(260)
-					# e = time.time()
-					# print(f"tokenizing took {e - s} seconds")
 			batch.append(currentEntry)
 
 	# x = torch.stack([torch.tensor(entry[:-1]) for entry in batch])
 	x = torch.tensor([entry[:-1] for entry in batch], device = device)
 	# y = torch.stack([torch.tensor(entry[1:]) for entry in batch])
 	y = torch.tensor([entry[1:] for entry in batch], device = device)
+	# print(f"getbatch took {time.time() - s} seconds")
 	return x, y
 
 
@@ -121,21 +129,22 @@ def getBatch(split = "train"):
 torch.manual_seed(67)
 # vocabSize = len(tokens)
 vocabSize = 8192
-blockSize = 512 # context size
-embedSize = 256 # embedding dimension
-batchSize = 64
-blockNum = 6
-feedForwardSize = 4 
+blockSize = 256 # context size
+embedSize = 1024
+blockNum = 16
+headNum = 16
 
-headNum = 4
+feedForwardSize = 4
 headSize = embedSize//headNum # must be divisible
 dropout = 0.1
 
-evalIters = 50
-evalInterval = 1000
-saveInterval = 1000
-printInterval = 100
-trainIters = 1000000
+batchSize = 16
+evalIters = 100
+evalInterval = 10000
+saveInterval = 2000
+printInterval = 2000
+trainIters = 999999990
+trainEpochs = 0
 
 learningRate = 1e-4
 betas = (0.9, 0.95)
@@ -269,17 +278,62 @@ class Model(nn.Module):
 
 
 	@torch.no_grad()
-	def generate(self, tokens, maxTokens):
+	def repetitionPenalty(self, logits, generated, penalty = 1.1):
+		invPenalty = 1 / penalty
+		if penalty == 1:
+			return logits
+		for used in generated:
+			if logits[used] > 0:
+				logits[used] *= invPenalty
+			else:
+				logits[used] *= penalty
+		return logits
+
+	@torch.no_grad()
+	def applyTopKP(self, logits, k = 10, p = 0.9):
+		topk, indices = torch.topk(logits, k)
+		kMask = torch.ones_like(logits, dtype = torch.bool)
+		kMask.scatter_(0, indices, False)
+		logits = logits.masked_fill(kMask, float("-inf"))
+		# return logits
+		sortedLogits, indices = torch.sort(logits, descending = True)
+		probs = torch.softmax(sortedLogits, dim = 0)
+		pMask = torch.cumsum(probs, dim = 0) > p
+
+		pMask[1:] = pMask[:-1].clone()
+		pMask[0] = 0
+
+		toRemove = torch.zeros_like(logits, dtype = torch.bool)
+		toRemove[indices[pMask]] = True
+		return logits.masked_fill(toRemove, float("-inf"))
+
+
+
+
+	@torch.no_grad()
+	def generate(self, tokens, maxTokens, temperature = 0.8, k = 10, p = 0.9, penalty = 1.1):
+		temperature = 1 / max(temperature, 0.01)
 		# tokens = start[:-blockSize].unsqueeze(0)
 		tokens = tokens.unsqueeze(0)
 		self.eval()
+		generated = set()
 		for i in range(maxTokens):
 			# tokens = tokens[:,:-blockSize]
-			logits = self(tokens[:,-blockSize:])[0] # [0] to get logits and ignore loss return
-			logits = F.softmax(logits[:,-1,:], dim = -1)
-			# print(logits)
+			logits = self(tokens[:,-blockSize:])[0][:,-1,:][0] # [0] to get logits and ignore loss return
+			logits[260] = float("-inf") # not allowed to output <|endOfDocument|> token
+			logits[7461] = float("-inf") # "Deleted", so cant generate messages from Deleted User
+			# print(logits[:,-1,:].shape)
+			# print(logits.shape)
+			logits = self.repetitionPenalty(logits, generated, penalty)
+			logits = self.applyTopKP(logits, k, p)
+
+			logits = F.softmax(logits * temperature, dim = -1)
 			nextToken = torch.multinomial(logits, num_samples=1)
-			tokens = torch.cat((tokens, nextToken), dim = 1)
+			# nextToken = torch.argmax(logits[:,-1,:], dim=-1, keepdim=True)
+			generated.add(nextToken.item())
+			# print(tokens)
+			# print(nextToken)
+			tokens = torch.cat((tokens, nextToken.unsqueeze(0)), dim = 1)
 		self.train()
 		return tokens[0]
 
@@ -299,12 +353,12 @@ def load():
 
 
 
+# starting fine tuning at step 894000
 
-
-
+currentEpoch = 0
 
 model = Model().to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr = learningRate, betas=betas, weight_decay=weight_decay,eps=epsilon,)
+optimizer = torch.optim.AdamW(model.parameters(), lr = learningRate, betas=betas, weight_decay=weight_decay,eps=epsilon,fused=False, foreach=True)
 step = 0
 # print(decode(model.generate(encode("\n"), 100)))
 try:
@@ -315,16 +369,39 @@ try:
 except:
 	print("failed to load frfr")
 
-while step < trainIters:
+
+batchTime = 0
+forwardTime = 0
+backwardTime = 0
+zerogradTime = 0
+optimizerStepTime = 0
+while step < trainIters and currentEpoch < trainEpochs:
 	# print("\rbatch", end="")
+	# print("getbatch")
+	s = time.time()
+	ss=time.time()
 	x, y = getBatch()
+	batchTime += time.time() - s
+	s = time.time()
 	optimizer.zero_grad(set_to_none=True)
+	zerogradTime += time.time() - s
+	s = time.time()
 	with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 		# print("\rforward", end="")
 		logits, loss = model(x, y)
+		forwardTime += time.time() - s
+		s = time.time()
 		# print("\rbackward", end="")
 		loss.backward()
+		backwardTime += time.time() - s
+		s = time.time()
 	optimizer.step()
+	optimizerStepTime += time.time() - s
+
+
+	# tt = batchTime + forwardTime + backwardTime + zerogradTime + optimizerStepTime
+
+	# print(f"\rbatch: {round(batchTime/t, 3)}, forward: {round(forwardTime/t, 3)}, backward: {round(backwardTime/t, 3)}, zerograd: {round(zerogradTime/t, 3)}, optimizerStep: {round(optimizerStepTime/t, 3)}, iterTime: {round(time.time() - ss, 3)}", end="")
 
 	if step % evalInterval == 0 and step != 0:
 		print(step, model.estimateLoss())
@@ -336,10 +413,23 @@ while step < trainIters:
 	step += 1
 
 print("done!")
-save(model, optimizer, step)
-print(model.estimateLoss())
-g = model.generate(encode("Why did the chicken cross the road?").to(device), 1000).cpu().tolist()
-print(t.fromBytes(t.decode(g)))
+# save(model, optimizer, step)
+# print(model.estimateLoss())
+# prompt = """Once upon a time, in a small village surrounded by mountains, there lived"""
+prompt = """It was a cold and rainy evening when Sarah heard a strange noise coming from the kitchen"""
+# prompt = """The meaning of life is"""
+# prompt = """Why did the chicken cross the road"""
+# prompt = """Alice: Hey, what are you doing this weekend?\nBob:"""
+# prompt = """<|nameStart|>maderez<|nameEnd|><|msgStart|>hey atticus!<|msgEnd|><|nameStart|>nobody8178<|nameEnd|><|msgStart|>Morning yall<|msgEnd|><|nameStart|>dipsykoo<|nameEnd|><|msgStart|>morninggggggg<|msgEnd|><|nameStart|>nobody8178<|nameEnd|><|msgStart|>Im tired asf man😭<|msgEnd|><|nameStart|>dipsykoo<|nameEnd|><|msgStart|>sending you hugs and energyyyyyyyyy<|msgEnd|><|nameStart|>nobody8178<|nameEnd|><|msgStart|>Extra energy please😂<|msgEnd|><|nameStart|>dipsykoo<|nameEnd|><|msgStart|>:Madere1Love01: :Madere1Love02: :Madere1Love01: :Madere1Love02: :Madere1Love01: :Madere1Love02: :Madere1Love01: :Madere1Love02: :Madere1Love01: :Madere1Love02: :Madere1Love01: :Madere1Love02:<|msgEnd|><|nameStart|>nobody8178"""
+
+
+g = model.generate(encode(prompt).to(device), 100, 0.8, 50, 0.9, 1.15).cpu().tolist()
+
+
+text = t.fromBytes(t.decode(g))
+# text = text.replace("<|nameEnd|><|msgStart|>", ": ").replace("<|msgEnd|><|nameStart|>", "\n")
+
+print(text)
 
 
 
