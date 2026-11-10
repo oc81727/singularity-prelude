@@ -1,7 +1,7 @@
 # singularity-prelude
 Decoder-only generative pretrained transformer, and byte pair encoding tokeniser.
 
-
+---
 ### Example outputs, trained on <a href="https://huggingface.co/datasets/HuggingFaceFW/fineweb/tree/main/sample/10BT">FineWeb 10BT sample</a>
 
   #### Hyperparameters:
@@ -46,6 +46,7 @@ Decoder-only generative pretrained transformer, and byte pair encoding tokeniser
 - GPT architecture
 - Multi-headed casual attention
 -->
+---
 ### Example `transformer.py` usage (training):
 
 Modify lines `129 - 152` to set hyperparameters:
@@ -100,6 +101,8 @@ t.load("data/tiktoks/checkpoint7931") # replace with location of saved tokeniser
 Run `transformer.py`.   
 Outputs trained model to `model.pth`.  
 
+
+---
 ### Example `transformer.py` usage (generation):
 
 ```python
@@ -115,7 +118,7 @@ text = t.fromBytes(t.decode(g))
 print(text)
 
 ```
-
+---
 
 ### Tokeniser Information
 
